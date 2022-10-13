@@ -10,9 +10,12 @@ import {
   useMessagePipeline,
 } from "@foxglove/studio-base/components/MessagePipeline";
 import { useCurrentLayoutActions } from "@foxglove/studio-base/context/CurrentLayoutContext";
+import { PanelsState } from "@foxglove/studio-base/context/CurrentLayoutContext/actions";
 import { useCurrentUser } from "@foxglove/studio-base/context/CurrentUserContext";
 import { EventsStore, useEvents } from "@foxglove/studio-base/context/EventsContext";
+import { useLayoutManager } from "@foxglove/studio-base/context/LayoutManagerContext";
 import { usePlayerSelection } from "@foxglove/studio-base/context/PlayerSelectionContext";
+import useCallbackWithToast from "@foxglove/studio-base/hooks/useCallbackWithToast";
 import { PlayerPresence } from "@foxglove/studio-base/players/types";
 import { parseAppURLState } from "@foxglove/studio-base/util/appURLState";
 
@@ -35,6 +38,7 @@ export function useInitialDeepLinkState(deepLinks: readonly string[]): {
   const playerPresence = useMessagePipeline(selectPlayerPresence);
   const { currentUser } = useCurrentUser();
   const selectEvent = useEvents(selectSelectEvent);
+  const layoutManager = useLayoutManager();
 
   const targetUrlState = useMemo(
     () => (deepLinks[0] ? parseAppURLState(new URL(deepLinks[0])) : undefined),
@@ -49,6 +53,8 @@ export function useInitialDeepLinkState(deepLinks: readonly string[]): {
   const [unappliedUrlState, setUnappliedUrlState] = useState(
     targetUrlState ? { ...targetUrlState } : undefined,
   );
+
+  const [fetchingLayout, setFetchingLayout] = useState(false);
 
   // Load data source from URL.
   useEffect(() => {
@@ -73,23 +79,83 @@ export function useInitialDeepLinkState(deepLinks: readonly string[]): {
     }
   }, [currentUser, currentUserRequired, selectEvent, selectSource, unappliedUrlState]);
 
+  const fetchLayout = useCallbackWithToast(
+    async (url: URL, name: string) => {
+      let res;
+      try {
+        res = await fetch(url.href);
+      } catch {
+        throw `Could not load the layout from ${url}`;
+      }
+      if (!res.ok) {
+        throw `Could not load the layout from ${url}`;
+      }
+      let data: PanelsState;
+      try {
+        data = await res.json();
+      } catch {
+        throw `${url} does not contain valid layout JSON`;
+      }
+
+      const layouts = await layoutManager.getLayouts();
+      const sourceLayout = layouts.find((layout) => layout.name === name);
+
+      let newLayout;
+      if (sourceLayout == undefined) {
+        newLayout = await layoutManager.saveNewLayout({
+          name,
+          data,
+          permission: "CREATOR_WRITE",
+        });
+      } else {
+        newLayout = await layoutManager.updateLayout({
+          id: sourceLayout.id,
+          name,
+          data,
+        });
+      }
+
+      setSelectedLayoutId(newLayout.id);
+      setUnappliedUrlState((oldState) => ({ ...oldState, layoutUrl: undefined }));
+      setFetchingLayout(false);
+    },
+    [setSelectedLayoutId, layoutManager],
+  );
+
   // Select layout from URL.
   useEffect(() => {
-    if (!unappliedUrlState?.layoutId) {
-      return;
+    if (unappliedUrlState?.layoutId) {
+      // If our datasource requires a current user then wait until the player is
+      // available to load the layout since we may need to sync layouts first and
+      // that's only possible after the user has logged in.
+      if (currentUserRequired && playerPresence !== PlayerPresence.PRESENT) {
+        return;
+      }
+
+      log.debug(`Initializing layout from url: ${unappliedUrlState.layoutId}`);
+      setSelectedLayoutId(unappliedUrlState.layoutId);
+      setUnappliedUrlState((oldState) => ({ ...oldState, layoutId: undefined }));
     }
 
-    // If our datasource requires a current user then wait until the player is
-    // available to load the layout since we may need to sync layouts first and
-    // that's only possible after the user has logged in.
-    if (currentUserRequired && playerPresence !== PlayerPresence.PRESENT) {
-      return;
-    }
+    if (unappliedUrlState?.layoutUrl && !fetchingLayout) {
+      const url = new URL(unappliedUrlState.layoutUrl);
+      const name = url.pathname.replace(/.*\//, "");
+      log.debug(`Trying to load layout ${name} from ${url}`);
 
-    log.debug(`Initializing layout from url: ${unappliedUrlState.layoutId}`);
-    setSelectedLayoutId(unappliedUrlState.layoutId);
-    setUnappliedUrlState((oldState) => ({ ...oldState, layoutId: undefined }));
-  }, [currentUserRequired, playerPresence, setSelectedLayoutId, unappliedUrlState?.layoutId]);
+      setFetchingLayout(true);
+      fetchLayout(url, name).catch(() => {
+        return;
+      });
+    }
+  }, [
+    currentUserRequired,
+    playerPresence,
+    setSelectedLayoutId,
+    fetchLayout,
+    fetchingLayout,
+    unappliedUrlState?.layoutId,
+    unappliedUrlState?.layoutUrl,
+  ]);
 
   // Seek to time in URL.
   useEffect(() => {
