@@ -80,10 +80,10 @@ export function useInitialDeepLinkState(deepLinks: readonly string[]): {
   }, [currentUser, currentUserRequired, selectEvent, selectSource, unappliedUrlState]);
 
   const fetchLayout = useCallbackWithToast(
-    async (url: URL, name: string) => {
+    async (url: URL | RequestInfo, name: string) => {
       let res;
       try {
-        res = await fetch(url.href);
+        res = await fetch(url instanceof URL ? url.href : url);
       } catch {
         throw `Could not load the layout from ${url}`;
       }
@@ -137,15 +137,22 @@ export function useInitialDeepLinkState(deepLinks: readonly string[]): {
       setUnappliedUrlState((oldState) => ({ ...oldState, layoutId: undefined }));
     }
 
-    if (unappliedUrlState?.layoutUrl && !fetchingLayout) {
-      const url = new URL(unappliedUrlState.layoutUrl);
-      const name = url.pathname.replace(/.*\//, "");
-      log.debug(`Trying to load layout ${name} from ${url}`);
+    if (!fetchingLayout) {
+      if (unappliedUrlState?.layoutUrl) {
+        const url = new URL(unappliedUrlState.layoutUrl);
+        const name = url.pathname.replace(/.*\//, "");
+        log.debug(`Trying to load layout ${name} from ${url}`);
 
-      setFetchingLayout(true);
-      fetchLayout(url, name).catch(() => {
-        return;
-      });
+        setFetchingLayout(true);
+        fetchLayout(url, name).catch(() => {
+          return;
+        });
+      } else {
+        log.debug("Trying to load preset layout from /config.json");
+        fetchLayout("config.json", "Preset").catch(() => {
+          return;
+        });
+      }
     }
   }, [
     currentUserRequired,
