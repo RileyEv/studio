@@ -3,7 +3,7 @@
 // License, v2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/
 
-import { renderHook, act } from "@testing-library/react-hooks";
+import { renderHook, act } from "@testing-library/react";
 import { useSnackbar } from "notistack";
 import { PropsWithChildren } from "react";
 
@@ -153,14 +153,24 @@ describe("Initial deep link state", () => {
 
     expect(selectSource).not.toHaveBeenCalled();
 
+    const org: User["org"] = {
+      id: "fake-orgid",
+      slug: "fake-org",
+      displayName: "Fake Org",
+      isEnterprise: false,
+      allowsUploads: false,
+      supportsEdgeSites: false,
+    };
+
     setWrapperProps({
       currentUser: {
         id: "id",
         email: "email",
-        orgId: "org",
-        orgDisplayName: "org name",
-        orgSlug: "org",
+        orgId: org.id,
+        orgDisplayName: org.displayName,
+        orgSlug: org.slug,
         orgPaid: true,
+        org,
       },
       playerSelection: emptyPlayerSelection,
     });

@@ -35,6 +35,7 @@ import type { Renderable } from "./Renderable";
 import { SceneExtension } from "./SceneExtension";
 import { ScreenOverlay } from "./ScreenOverlay";
 import { SettingsManager, SettingsTreeEntry } from "./SettingsManager";
+import { SharedGeometry } from "./SharedGeometry";
 import { CameraState } from "./camera";
 import { DARK_OUTLINE, LIGHT_OUTLINE, stringToRgb } from "./color";
 import { FRAME_TRANSFORM_DATATYPES } from "./foxglove";
@@ -49,10 +50,11 @@ import { CoreSettings } from "./renderables/CoreSettings";
 import { FrameAxes, LayerSettingsTransform } from "./renderables/FrameAxes";
 import { Grids } from "./renderables/Grids";
 import { Images } from "./renderables/Images";
+import { LaserScans } from "./renderables/LaserScans";
 import { Markers } from "./renderables/Markers";
 import { MeasurementTool } from "./renderables/MeasurementTool";
 import { OccupancyGrids } from "./renderables/OccupancyGrids";
-import { PointCloudsAndLaserScans } from "./renderables/PointCloudsAndLaserScans";
+import { PointClouds } from "./renderables/PointClouds";
 import { Polygons } from "./renderables/Polygons";
 import { PoseArrays } from "./renderables/PoseArrays";
 import { Poses } from "./renderables/Poses";
@@ -322,16 +324,17 @@ export class Renderer extends EventEmitter<RendererEvents> {
 
   public labelPool = new LabelPool({ fontFamily: fonts.MONOSPACE });
   public markerPool = new MarkerPool(this);
+  public sharedGeometry = new SharedGeometry();
 
   private _prevResolution = new THREE.Vector2();
   private _pickingEnabled = false;
   private _isUpdatingCameraState = false;
   private _animationFrame?: number;
   private _cameraSyncError: undefined | string;
+  private _devicePixelRatioMediaQuery?: MediaQueryList;
 
   public constructor(canvas: HTMLCanvasElement, config: RendererConfig) {
     super();
-
     // NOTE: Global side effect
     THREE.Object3D.DefaultUp = new THREE.Vector3(0, 0, 1);
 
@@ -427,7 +430,7 @@ export class Renderer extends EventEmitter<RendererEvents> {
 
     this.picker = new Picker(this.gl, this.scene, { debug: DEBUG_PICKING });
 
-    this.selectionBackdrop = new ScreenOverlay();
+    this.selectionBackdrop = new ScreenOverlay(this);
     this.selectionBackdrop.visible = false;
     this.scene.add(this.selectionBackdrop);
 
@@ -472,13 +475,14 @@ export class Renderer extends EventEmitter<RendererEvents> {
     this.addSceneExtension(new Markers(this));
     this.addSceneExtension(new FoxgloveSceneEntities(this));
     this.addSceneExtension(new FoxgloveGrid(this));
+    this.addSceneExtension(new LaserScans(this));
     this.addSceneExtension(new OccupancyGrids(this));
-    this.addSceneExtension(new PointCloudsAndLaserScans(this));
-    this.addSceneExtension(new VelodyneScans(this));
+    this.addSceneExtension(new PointClouds(this));
     this.addSceneExtension(new Polygons(this));
     this.addSceneExtension(new Poses(this));
     this.addSceneExtension(new PoseArrays(this));
     this.addSceneExtension(new Urdfs(this));
+    this.addSceneExtension(new VelodyneScans(this));
     this.addSceneExtension(this.measurementTool);
     this.addSceneExtension(this.publishClickTool);
 
@@ -488,31 +492,36 @@ export class Renderer extends EventEmitter<RendererEvents> {
     this.animationFrame();
   }
 
+  private _onDevicePixelRatioChange = () => {
+    log.debug(`devicePixelRatio changed to ${window.devicePixelRatio}`);
+    this.resizeHandler(this.input.canvasSize);
+    this._watchDevicePixelRatio();
+  };
+
   private _watchDevicePixelRatio() {
-    window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener(
-      "change",
-      () => {
-        log.debug(`devicePixelRatio changed to ${window.devicePixelRatio}`);
-        this.resizeHandler(this.input.canvasSize);
-        this._watchDevicePixelRatio();
-      },
-      { once: true },
+    this._devicePixelRatioMediaQuery = window.matchMedia(
+      `(resolution: ${window.devicePixelRatio}dppx)`,
     );
+    this._devicePixelRatioMediaQuery.addEventListener("change", this._onDevicePixelRatioChange, {
+      once: true,
+    });
   }
 
   public dispose(): void {
     log.warn(`Disposing renderer`);
+    this._devicePixelRatioMediaQuery?.removeEventListener("change", this._onDevicePixelRatioChange);
     this.removeAllListeners();
 
-    this.settings.off("update");
-    this.input.off("resize", this.resizeHandler);
-    this.input.off("click", this.clickHandler);
+    this.settings.removeAllListeners();
+    this.input.removeAllListeners();
+
     this.controls.dispose();
 
     for (const extension of this.sceneExtensions.values()) {
       extension.dispose();
     }
     this.sceneExtensions.clear();
+    this.sharedGeometry.dispose();
 
     this.labelPool.dispose();
     this.markerPool.dispose();
@@ -883,14 +892,18 @@ export class Renderer extends EventEmitter<RendererEvents> {
     } else if (Array.isArray(maybeHasMarkers.markers)) {
       // If this message has an array called markers, scrape frame_id from all markers
       for (const marker of maybeHasMarkers.markers) {
-        const frameId = marker.header?.frame_id ?? "";
-        this.addCoordinateFrame(frameId);
+        if (marker) {
+          const frameId = marker.header?.frame_id ?? "";
+          this.addCoordinateFrame(frameId);
+        }
       }
     } else if (Array.isArray(maybeHasEntities.entities)) {
       // If this message has an array called entities, scrape frame_id from all entities
       for (const entity of maybeHasEntities.entities) {
-        const frameId = entity.frame_id ?? "";
-        this.addCoordinateFrame(frameId);
+        if (entity) {
+          const frameId = entity.frame_id ?? "";
+          this.addCoordinateFrame(frameId);
+        }
       }
     } else if (typeof maybeHasFrameId.frame_id === "string") {
       // If this message has a top-level frame_id, scrape it

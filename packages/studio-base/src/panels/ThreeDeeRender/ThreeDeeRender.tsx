@@ -37,13 +37,12 @@ import {
 import PublishGoalIcon from "@foxglove/studio-base/components/PublishGoalIcon";
 import PublishPointIcon from "@foxglove/studio-base/components/PublishPointIcon";
 import PublishPoseEstimateIcon from "@foxglove/studio-base/components/PublishPoseEstimateIcon";
-import useCleanup from "@foxglove/studio-base/hooks/useCleanup";
 import ThemeProvider from "@foxglove/studio-base/theme/ThemeProvider";
 
 import { DebugGui } from "./DebugGui";
 import { InteractionContextMenu, Interactions, SelectionObject, TabType } from "./Interactions";
 import type { PickedRenderable } from "./Picker";
-import type { Renderable } from "./Renderable";
+import { Renderable, SELECTED_ID_VARIABLE } from "./Renderable";
 import {
   FollowMode,
   Renderer,
@@ -74,7 +73,7 @@ type Shared3DPanelState = {
 };
 
 const SHOW_DEBUG: true | false = false;
-const SELECTED_ID_VARIABLE = "selected_id";
+
 const PANEL_STYLE: React.CSSProperties = {
   width: "100%",
   height: "100%",
@@ -152,7 +151,7 @@ function RendererOverlay(props: {
     () =>
       selectedRenderables.map((selection) => ({
         object: {
-          pose: selection.renderable.userData.pose,
+          pose: selection.renderable.pose,
           scale: selection.renderable.scale,
           color: undefined,
           interactionData: {
@@ -173,9 +172,9 @@ function RendererOverlay(props: {
       selectedRenderable
         ? {
             object: {
-              pose: selectedRenderable.renderable.userData.pose,
+              pose: selectedRenderable.renderable.pose,
               interactionData: {
-                topic: (selectedRenderable.renderable.userData as { topic?: string }).topic,
+                topic: selectedRenderable.renderable.topic,
                 highlighted: true,
                 originalMessage: selectedRenderable.renderable.details(),
                 instanceDetails:
@@ -501,7 +500,11 @@ export function ThreeDeeRender({ context }: { context: PanelExtensionContext }):
   // Write to a global variable when the current selection changes
   const updateSelectedRenderable = useCallback(
     (selection: PickedRenderable | undefined) => {
-      const id = (selection?.renderable.details() as { id?: number | string } | undefined)?.id;
+      const id = selection?.renderable.idFromMessage();
+      const customVariable = selection?.renderable.selectedIdVariable();
+      if (customVariable) {
+        context.setVariable(customVariable, id ?? ReactNull);
+      }
       context.setVariable(SELECTED_ID_VARIABLE, id ?? ReactNull);
     },
     [context],
@@ -548,9 +551,6 @@ export function ThreeDeeRender({ context }: { context: PanelExtensionContext }):
     { leading: false, trailing: true, maxWait: 1000 },
   );
   useEffect(() => throttledSave(config), [config, throttledSave]);
-
-  // Dispose of the renderer (and associated GPU resources) on teardown
-  useCleanup(() => renderer?.dispose());
 
   // Establish a connection to the message pipeline with context.watch and context.onRender
   useLayoutEffect(() => {
@@ -817,9 +817,9 @@ export function ThreeDeeRender({ context }: { context: PanelExtensionContext }):
   useEffect(() => {
     const onStart = () => setPublishActive(true);
     const onSubmit = (event: PublishClickEvent & { type: "foxglove.publish-submit" }) => {
-      const frameId = renderer?.fixedFrameId;
+      const frameId = renderer?.renderFrameId;
       if (frameId == undefined) {
-        log.warn("Unable to publish, fixedFrameId is not set");
+        log.warn("Unable to publish, renderFrameId is not set");
         return;
       }
       if (!context.publish) {
@@ -872,7 +872,7 @@ export function ThreeDeeRender({ context }: { context: PanelExtensionContext }):
     context,
     latestPublishConfig,
     publishTopics,
-    renderer?.fixedFrameId,
+    renderer?.renderFrameId,
     renderer?.publishClickTool,
   ]);
 
